@@ -107,6 +107,8 @@ sfq capabilities
 ```bash
 # 显示浏览器，等待登录后抓取（推荐）
 sfq scrape
+<img width="392" height="305" alt="image" src="https://github.com/user-attachments/assets/ddab468c-7c93-4c8f-a497-4a9950f4c90c" />
+
 
 # 无头模式（需先登录过）
 sfq scrape --headless
