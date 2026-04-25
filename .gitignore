@@ -40,3 +40,8 @@ env/
 # Project specific - scraper debug outputs
 debug/
 scraped_models.json
+
+# Testing
+.coverage
+.pytest_cache/
+htmlcov/

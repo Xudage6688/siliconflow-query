@@ -105,10 +105,16 @@ sfq capabilities
 自动登录并从 SiliconFlow 官网抓取最新免费模型信息：
 
 ```bash
-# 显示浏览器，等待登录后抓取（推荐）
+# 全量抓取（显示浏览器，等待登录）
 sfq scrape
 <img width="392" height="305" alt="image" src="https://github.com/user-attachments/assets/ddab468c-7c93-4c8f-a497-4a9950f4c90c" />
 
+
+# 增量抓取（近90天的免费模型，更快）
+sfq scrape --latest
+
+# 增量抓取（近30天）
+sfq scrape --latest --days 30
 
 # 无头模式（需先登录过）
 sfq scrape --headless
@@ -118,9 +124,6 @@ sfq scrape --skip-login
 
 # 跳过详情页价格检查（更快但不完整）
 sfq scrape --skip-detail-check
-
-# 限制抓取数量
-sfq scrape --max 50
 ```
 
 ### 更新本地数据库
@@ -190,6 +193,15 @@ pip install -e ".[dev]"
 
 # 运行测试
 pytest
+
+# 运行测试（带覆盖率）
+pytest --cov=src/siliconflow_query --cov-report=term-missing
+
+# 运行 E2E 测试
+pytest tests/e2e/
+
+# 安装 Playwright 浏览器（首次运行爬虫测试需要）
+playwright install chromium
 ```
 
 ## 许可证
