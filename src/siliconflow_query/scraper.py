@@ -67,6 +67,72 @@ def is_free_model(inp: str, out: str) -> bool:
     return input_val == 0.0 and output_val == 0.0
 
 
+# 模型 ID 中的无效片段黑名单
+_NON_MODEL_PATTERNS = frozenset(['Model_LOGO', 'svg', 'oss-cn', 'aliyuncs', '.com'])
+
+
+def is_valid_model_id(id_str: str) -> bool:
+    """验证是否为有效的模型 ID 格式（排除 URL 片段和资源名称）"""
+    if not id_str or '/' not in id_str:
+        return False
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9_-]*/[a-zA-Z0-9_.-]+$', id_str):
+        return False
+    return not any(x in id_str for x in _NON_MODEL_PATTERNS)
+
+
+def extract_provider(model_id: str) -> str:
+    """从模型 ID 提取提供商名称"""
+    return model_id.split('/')[0] if '/' in model_id else ""
+
+
+def extract_model_name(model_id: str) -> str:
+    """从模型 ID 提取模型名称"""
+    return model_id.split('/')[-1] if '/' in model_id else model_id
+
+
+def extract_context_length(text: str) -> str:
+    """从页面文本中提取上下文长度"""
+    m = re.search(r'(?:上下文|Context|Total Context)[:\s]*(\d+[\d,Kk]*)', text, re.IGNORECASE)
+    return m.group(1) if m else ""
+
+
+def detect_free_from_text(body_text: str) -> bool:
+    """从页面文本中检测免费模型标记"""
+    return bool(
+        re.search(r'¥?\s*0\.0+\s*/\s*K?\s*Tokens?', body_text, re.IGNORECASE)
+        or re.search(r'free-text-model\.online', body_text, re.IGNORECASE)
+    )
+
+
+async def close_sidebar(page: Page, timeout_ms: int = 300) -> None:
+    """关闭侧边栏（点击关闭按钮或按 ESC 键）"""
+    try:
+        close_btn = await page.query_selector(
+            '[class*="close"], [aria-label="Close"], button.close, .ant-drawer-close'
+        )
+        if close_btn:
+            await close_btn.click()
+        else:
+            await page.keyboard.press("Escape")
+        await page.wait_for_timeout(timeout_ms)
+    except Exception:
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(timeout_ms)
+
+
+async def scroll_to_load(page: Page, max_scrolls: int, wait_ms: int = 300) -> int:
+    """滚动加载动态内容，返回实际滚动次数"""
+    prev_height = 0
+    for i in range(max_scrolls):
+        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        await page.wait_for_timeout(wait_ms)
+        curr_height = await page.evaluate("document.body.scrollHeight")
+        if curr_height == prev_height:
+            return i + 1
+        prev_height = curr_height
+    return max_scrolls
+
+
 async def scrape_dashboard(page: Page) -> List[ScrapedModel]:
     """从登录后的模型仪表板抓取所有模型和价格
 
@@ -89,18 +155,8 @@ async def scrape_dashboard(page: Page) -> List[ScrapedModel]:
         return models
 
     # 滚动加载所有模型（智能滚动：检测高度不变就停）
-    prev_height = 0
-    for i in range(MAX_SCROLLS_FULL):
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await page.wait_for_timeout(300)
-        # 检测滚动高度是否变化
-        curr_height = await page.evaluate("document.body.scrollHeight")
-        if curr_height == prev_height:
-            print(f"  滚动完成（{i+1}次，高度不再变化）")
-            break
-        prev_height = curr_height
-        if i % 2 == 0:
-            print(f"  滚动加载中... ({i+1}/{MAX_SCROLLS_FULL})")
+    scroll_count = await scroll_to_load(page, MAX_SCROLLS_FULL, 300)
+    print(f"  滚动完成（{scroll_count}次）")
 
     # 保存调试信息
     DEBUG_DIR.mkdir(parents=True, exist_ok=True)
@@ -236,8 +292,8 @@ async def scrape_dashboard(page: Page) -> List[ScrapedModel]:
             if not model_id:
                 continue
 
-            # 提取 Provider (在 span.truncate 中，通常是模型 ID 的第一部分)
-            provider = model_id.split('/')[0] if '/' in model_id else ""
+            # 提取 Provider
+            provider = extract_provider(model_id)
 
             # 提取 Provider 显示名称 (可能不同于 ID 中的)
             provider_elem = await card.query_selector('span.truncate')
@@ -281,7 +337,7 @@ async def scrape_dashboard(page: Page) -> List[ScrapedModel]:
             # 创建模型对象
             model = ScrapedModel(
                 id=model_id,
-                name=model_id.split('/')[-1] if '/' in model_id else model_id,
+                name=extract_model_name(model_id),
                 provider=provider,
                 context_length=context_length,
                 description=description,
@@ -419,12 +475,8 @@ async def check_model_pricing_in_dashboard(page: Page, model_id: str) -> Scraped
             # 获取侧边栏内容
             body_text = await page.evaluate("() => document.body.innerText")
 
-            # 检测免费价格格式: ¥0.000000/ K Tokens
-            if re.search(r'¥?\s*0\.0+\s*/\s*K?\s*Tokens?', body_text, re.IGNORECASE):
-                model.input_price = "0"
-                model.output_price = "0"
-                model.is_free = True
-            elif re.search(r'free-text-model\.online', body_text, re.IGNORECASE):
+            # 检测免费价格格式
+            if detect_free_from_text(body_text):
                 model.input_price = "0"
                 model.output_price = "0"
                 model.is_free = True
@@ -441,34 +493,20 @@ async def check_model_pricing_in_dashboard(page: Page, model_id: str) -> Scraped
                     model.is_free = is_free_model(model.input_price, model.output_price)
 
             # 提取上下文长度
-            ctx_match = re.search(r'(?:上下文|Context|Total Context)[:\s]*(\d+[\d,Kk]*)', body_text, re.IGNORECASE)
-            if ctx_match:
-                model.context_length = ctx_match.group(1)
+            model.context_length = extract_context_length(body_text)
 
             # 提取描述
             desc_match = re.search(r'(?:简介|Description|模型简介)[:\s]*([^\n]+)', body_text, re.IGNORECASE)
             if desc_match:
                 model.description = desc_match.group(1).strip()[:100]
 
-            # 关闭侧边栏（优化：减少等待）
-            try:
-                close_btn = await page.query_selector('[class*="close"], [aria-label="Close"], button.close, .ant-drawer-close')
-                if close_btn:
-                    await close_btn.click()
-                else:
-                    await page.keyboard.press("Escape")
-                await page.wait_for_timeout(300)
-            except Exception:
-                # 关闭按钮查找失败，尝试键盘关闭
-                await page.keyboard.press("Escape")
-                await page.wait_for_timeout(300)
+            # 关闭侧边栏
+            await close_sidebar(page)
 
     except Exception as e:
         print(f"    [WARN] 检查 {model_id} 价格时出错: {type(e).__name__}: {e}")
 
-    if "/" in model_id:
-        model.provider = model_id.split("/")[0]
-
+    model.provider = extract_provider(model_id)
     return model
 
 
@@ -648,14 +686,7 @@ async def run_scrape_latest(
 
         # 滚动加载所有可见模型
         print("  正在滚动加载模型...")
-        prev_height = 0
-        for i in range(MAX_SCROLLS_LATEST):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(400)
-            curr_height = await page.evaluate("document.body.scrollHeight")
-            if curr_height == prev_height:
-                break
-            prev_height = curr_height
+        await scroll_to_load(page, MAX_SCROLLS_LATEST, 400)
 
         # 获取页面 HTML
         html = await page.content()
@@ -677,10 +708,8 @@ async def run_scrape_latest(
                 # 提取模型 ID
                 model_id = ""
                 id_match = re.search(r'([a-zA-Z0-9][a-zA-Z0-9_-]*/[a-zA-Z0-9_.-]+)', card_text)
-                if id_match:
-                    candidate = id_match.group(1)
-                    if not any(x in candidate for x in ['Model_LOGO', 'svg', 'oss-cn', '.com']):
-                        model_id = candidate
+                if id_match and is_valid_model_id(id_match.group(1)):
+                    model_id = id_match.group(1)
 
                 if not model_id:
                     print(f"  [{i+1}/{len(cards)}] 跳过（无法提取模型ID）")
@@ -699,36 +728,20 @@ async def run_scrape_latest(
                 body_text = await page.evaluate("() => document.body.innerText")
 
                 # 检测免费价格
-                is_free = False
-                if re.search(r'¥?\s*0\.0+\s*/\s*K?\s*Tokens?', body_text, re.IGNORECASE):
-                    is_free = True
-                elif re.search(r'free-text-model\.online', body_text, re.IGNORECASE):
-                    is_free = True
+                is_free = detect_free_from_text(body_text)
 
                 # 提取上下文长度
-                context_length = ""
-                ctx_match = re.search(r'(?:上下文|Context|Total Context)[:\s]*(\d+[\d,Kk]*)', body_text, re.IGNORECASE)
-                if ctx_match:
-                    context_length = ctx_match.group(1)
+                context_length = extract_context_length(body_text)
 
                 # 关闭侧边栏
-                try:
-                    close_btn = await page.query_selector('[class*="close"], [aria-label="Close"], button.close, .ant-drawer-close')
-                    if close_btn:
-                        await close_btn.click()
-                    else:
-                        await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(200)
-                except Exception:
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(200)
+                await close_sidebar(page, 200)
 
                 if is_free and model_id not in seen_ids:
                     seen_ids.add(model_id)
                     model = ScrapedModel(
                         id=model_id,
-                        name=model_id.split('/')[-1],
-                        provider=model_id.split('/')[0],
+                        name=extract_model_name(model_id),
+                        provider=extract_provider(model_id),
                         context_length=context_length,
                         is_free=True,
                         is_deprecated=is_deprecated,

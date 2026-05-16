@@ -8,11 +8,49 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from typing import Optional
+from typing import Optional, Dict
 from .models import FreeModelsDB
 from .api_client import SiliconFlowClient
 from .config import Config
 from .scraper import run_scrape, run_scrape_latest, save_results
+
+
+# 已知模型的默认上下文长度（当 scraper 未抓取时使用）
+KNOWN_CONTEXT: Dict[str, int] = {
+    "THUDM/GLM-4-9B-0414": 131072,
+    "THUDM/GLM-Z1-9B-0414": 131072,
+    "THUDM/GLM-4.1V-9B-Thinking": 131072,
+    "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B": 32768,
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B": 32768,
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": 32768,
+    "Qwen/Qwen2.5-7B-Instruct": 32768,
+    "Qwen/Qwen3-8B": 131072,
+    "internlm/internlm2_5-7b-chat": 32768,
+    "tencent/Hunyuan-MT-7B": 32768,
+    "BAAI/bge-m3": 8192,
+    "BAAI/bge-large-en-v1.5": 512,
+    "BAAI/bge-large-zh-v1.5": 512,
+    "BAAI/bge-reranker-v2-m3": 8192,
+    "netease-youdao/bce-embedding-base_v1": 512,
+}
+
+# 已知模型的默认描述
+KNOWN_DESC: Dict[str, str] = {
+    "THUDM/GLM-4-9B-0414": "智谱AI GLM-4 9B 模型",
+    "THUDM/GLM-Z1-9B-0414": "智谱AI GLM-Z1 9B 思考模型",
+    "THUDM/GLM-4.1V-9B-Thinking": "智谱AI GLM-4.1V 9B 视觉思考模型",
+    "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B": "DeepSeek R1 推理模型",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B": "DeepSeek R1 蒸馏版",
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": "DeepSeek R1 蒸馏版",
+    "Qwen/Qwen3-8B": "通义千问3 8B，支持思考/非思考模式切换",
+    "internlm/internlm2_5-7b-chat": "书生浦语 2.5 7B 对话模型",
+    "tencent/Hunyuan-MT-7B": "腾讯混元翻译模型",
+    "BAAI/bge-m3": "多语言嵌入模型",
+    "BAAI/bge-large-en-v1.5": "英文嵌入模型",
+    "BAAI/bge-large-zh-v1.5": "中文嵌入模型",
+    "BAAI/bge-reranker-v2-m3": "多语言重排序模型",
+    "netease-youdao/bce-embedding-base_v1": "网易有道嵌入模型",
+}
 
 app = typer.Typer(
     name="sfq",
@@ -83,7 +121,7 @@ def list(
         )
 
     console.print(table)
-    console.print(f"\n[dim]数据更新: {get_db().last_updated} | 来源: {get_db().source}[/dim]")
+    console.print(f"\n[dim]数据更新: {db.last_updated} | 来源: {db.source}[/dim]")
 
 
 @app.command()
@@ -170,10 +208,12 @@ def verify():
 @app.command()
 def providers():
     """列出所有提供商"""
-    providers_list = get_db().get_providers()
+    db = get_db()
+    providers_list = db.get_providers()
+    models = db.get_all()
     console.print("[bold]可用提供商:[/bold]\n")
     for p in providers_list:
-        count = len([m for m in get_db().get_all() if m.provider == p])
+        count = sum(1 for m in models if m.provider == p)
         console.print(f"  [cyan]{p}[/cyan] ({count} 个模型)")
 
 
@@ -331,43 +371,6 @@ def update(
         "last_updated": datetime.now().strftime("%Y-%m-%d"),
         "source": "web scrape",
         "models": []
-    }
-
-    # 已知模型的默认上下文长度（当 scraper 未抓取时使用）
-    KNOWN_CONTEXT = {
-        "THUDM/GLM-4-9B-0414": 131072,
-        "THUDM/GLM-Z1-9B-0414": 131072,
-        "THUDM/GLM-4.1V-9B-Thinking": 131072,
-        "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B": 32768,
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B": 32768,
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": 32768,
-        "Qwen/Qwen2.5-7B-Instruct": 32768,
-        "Qwen/Qwen3-8B": 131072,
-        "internlm/internlm2_5-7b-chat": 32768,
-        "tencent/Hunyuan-MT-7B": 32768,
-        "BAAI/bge-m3": 8192,
-        "BAAI/bge-large-en-v1.5": 512,
-        "BAAI/bge-large-zh-v1.5": 512,
-        "BAAI/bge-reranker-v2-m3": 8192,
-        "netease-youdao/bce-embedding-base_v1": 512,
-    }
-
-    # 已知模型的默认描述
-    KNOWN_DESC = {
-        "THUDM/GLM-4-9B-0414": "智谱AI GLM-4 9B 模型",
-        "THUDM/GLM-Z1-9B-0414": "智谱AI GLM-Z1 9B 思考模型",
-        "THUDM/GLM-4.1V-9B-Thinking": "智谱AI GLM-4.1V 9B 视觉思考模型",
-        "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B": "DeepSeek R1 推理模型",
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B": "DeepSeek R1 蒸馏版",
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B": "DeepSeek R1 蒸馏版",
-        "Qwen/Qwen3-8B": "通义千问3 8B，支持思考/非思考模式切换",
-        "internlm/internlm2_5-7b-chat": "书生浦语 2.5 7B 对话模型",
-        "tencent/Hunyuan-MT-7B": "腾讯混元翻译模型",
-        "BAAI/bge-m3": "多语言嵌入模型",
-        "BAAI/bge-large-en-v1.5": "英文嵌入模型",
-        "BAAI/bge-large-zh-v1.5": "中文嵌入模型",
-        "BAAI/bge-reranker-v2-m3": "多语言重排序模型",
-        "netease-youdao/bce-embedding-base_v1": "网易有道嵌入模型",
     }
 
     for m in free_models:
